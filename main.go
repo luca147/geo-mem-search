@@ -4,82 +4,22 @@ import (
 	"fmt"
 	"github.com/golang/geo/s2"
 	geojson "github.com/paulmach/go.geojson"
+	"log"
+	"net/http"
 	"os"
 )
 
 func main() {
 	fmt.Println("Starting geo calculation...")
 
-	gb := []byte(`{
-  "type": "FeatureCollection",
-  "features": [
-    {
-      "type": "Feature",
-      "properties": {},
-      "geometry": {
-        "type": "Polygon",
-        "coordinates": [
-          [
-            [
-              -56.180992126464844,
-              -34.90057413710918
-            ],
-            [
-              -56.13945007324218,
-              -34.90057413710918
-            ],
-            [
-              -56.13945007324218,
-              -34.872693498558775
-            ],
-            [
-              -56.180992126464844,
-              -34.872693498558775
-            ],
-            [
-              -56.180992126464844,
-              -34.90057413710918
-            ]
-          ]
-        ]
-      }
-    },
-    {
-      "type": "Feature",
-      "properties": {
-        "inner": true
-      },
-      "geometry": {
-        "type": "Point",
-        "coordinates": [
-          -56.15867614746093,
-          -34.885367688770835
-        ]
-      }
-    },
-    {
-      "type": "Feature",
-      "properties": {
-        "inner": false
-      },
-      "geometry": {
-        "type": "Point",
-        "coordinates": [
-          -56.12297058105469,
-          -34.88086153393072
-        ]
-      }
-    }
-  ]
-}`)
+	err, geoJSON := LoadPolygonsFromFile("static/countries-polygons.json")
 
-	geoJSON, err := DecodeGeoJSON(gb)
 	if err != nil {
 		fmt.Printf("Error -> %v\n", err)
 		os.Exit(-1)
 	}
 
-	var outerPoint, innerPoint s2.Point
+	var innerPoint s2.Point
 	polygons := make([]*s2.Polygon, 0)
 
 	for _, feature := range geoJSON {
@@ -95,33 +35,51 @@ func main() {
 			if feature.Properties["inner"].(bool) {
 				innerPoint = s2.PointFromLatLng(latLng)
 			} else {
-				outerPoint = s2.PointFromLatLng(latLng)
+				//outerPoint = s2.PointFromLatLng(latLng)
 			}
+
+		case geojson.GeometryMultiPolygon:
+			//for _, mp := range feature.Geometry.MultiPolygon {
+			//	for _, p := range mp {
+			//		polygons = append(polygons, PointsToPolygon(p))
+			//	}
+			//}
 		}
 	}
 
-	shapes := IntersectedShapes(innerPoint, polygons)
+	LoadShapeIndex(polygons)
+	shapes := IntersectedShapes(innerPoint)
 	polygon := make([][][]float64, 1)
+	var shapeCount int
 	for _, shape := range shapes {
 		for _, loop := range shape.(*s2.Polygon).Loops() {
 			for _, point := range loop.Vertices() {
-				fmt.Printf("Points: %v\n", s2.LatLngFromPoint(point))
-				polygon[0] = append(polygon[0],
+				polygon[shapeCount] = append(polygon[shapeCount],
 					[]float64{
 						s2.LatLngFromPoint(point).Lng.Degrees(), s2.LatLngFromPoint(point).Lat.Degrees(),
 					},
 				)
 			}
 		}
-
+		shapeCount++
 	}
 
-	json, _ := geojson.NewPolygonFeature(polygon).MarshalJSON()
+	fmt.Printf("Number of intersected polygons: %d\n", shapeCount)
 
-	fmt.Printf("OUTPUT intersection: %s", string(json))
-	shapes2 := IntersectedShapes(outerPoint, polygons)
+	jsonOutput, _ := geojson.NewPolygonFeature(polygon).MarshalJSON()
+	fmt.Printf("OUTPUT intersection: %s", string(jsonOutput))
 
-	for _, shape := range shapes2 {
-		fmt.Printf("Outer Point: %v", shape)
+}
+
+func StartWebServer() {
+	fmt.Println("Starting Leaflet web page...")
+
+	fs := http.FileServer(http.Dir("./static"))
+	http.Handle("/", fs)
+
+	log.Println("Listening on :3000...")
+	err := http.ListenAndServe(":3000", nil)
+	if err != nil {
+		log.Fatal(err)
 	}
 }

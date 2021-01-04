@@ -1,6 +1,13 @@
 package main
 
-import "github.com/golang/geo/s2"
+import (
+	"encoding/json"
+	"fmt"
+	"github.com/golang/geo/s2"
+	"log"
+	"os"
+	"strconv"
+)
 import "github.com/paulmach/go.geojson"
 
 const (
@@ -15,6 +22,9 @@ type Point struct {
 	Lng float64
 }
 
+var shapeIndex *s2.ShapeIndex
+var query *s2.ContainsPointQuery
+
 // DecodeGeoJSON decodes a feature collection
 func DecodeGeoJSON(json []byte) ([]*geojson.Feature, error) {
 	f, err := geojson.UnmarshalFeatureCollection(json)
@@ -27,10 +37,22 @@ func DecodeGeoJSON(json []byte) ([]*geojson.Feature, error) {
 // PointsToPolygon converts points to s2 polygon
 func PointsToPolygon(points [][]float64) *s2.Polygon {
 	var pts []s2.Point
-	for _, pt := range points {
-		pts = append(pts, s2.PointFromLatLng(s2.LatLngFromDegrees(pt[1], pt[0])))
+	index := len(points)
+	if points[0][0] == points[index-1][0] && points[0][1] == points[index-1][1] {
+		index--
 	}
+
+	for i := 0; i < index; i++ {
+		pts = append(pts, s2.PointFromLatLng(s2.LatLngFromDegrees(points[i][1], points[i][0])))
+	}
+
 	loop := s2.LoopFromPoints(pts)
+
+	loop.Normalize()
+	err := loop.Validate()
+	if err != nil {
+		fmt.Printf("loop error %v \n", err)
+	}
 
 	return s2.PolygonFromLoops([]*s2.Loop{loop})
 }
@@ -77,13 +99,71 @@ func EdgesOfCell(c s2.Cell) [][]float64 {
 	return edges
 }
 
-func IntersectedShapes(point s2.Point, polygons []*s2.Polygon) []s2.Shape {
-	index := s2.NewShapeIndex()
-	for _, polygon := range polygons {
-		index.Add(polygon)
+func IntersectedShapes(point s2.Point) []s2.Shape {
+	if query == nil {
+		query = s2.NewContainsPointQuery(shapeIndex, s2.VertexModelClosed)
 	}
 
-	query := s2.NewContainsPointQuery(index, s2.VertexModelClosed)
-
 	return query.ContainingShapes(point)
+}
+
+func LoadShapeIndex(polygons []*s2.Polygon) {
+	if shapeIndex == nil {
+		shapeIndex = s2.NewShapeIndex()
+	}
+
+	var count int
+	for _, polygon := range polygons {
+		shapeIndex.Add(polygon)
+		if err := polygon.Validate(); err != nil {
+			fmt.Printf("error in polygon format: %v \n", err)
+			count++
+		}
+	}
+	fmt.Printf("numbers of unprocesed polygons: %d \n", count)
+	shapeIndex.Build()
+}
+
+//LoadPolygonsFromFile parsing json file as a stream of data => less memory footprint, as we read record by record
+func LoadPolygonsFromFile(filename string) (error, []*geojson.Feature) {
+	var count int64 = 0
+	file, err := os.Open(filename)
+	if err != nil {
+		return err, nil
+	}
+
+	defer file.Close()
+
+	dec := json.NewDecoder(file)
+
+	// read open bracket
+	t, err := dec.Token()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%T: %v\n", t, t)
+
+	out := make([]*geojson.Feature, 0)
+	// while the array contains values
+	for dec.More() {
+		m := geojson.Feature{}
+		err := dec.Decode(&m)
+		out = append(out, &m)
+		if err != nil {
+			log.Fatal(err)
+		}
+		count++
+	}
+
+	// read closing bracket
+	t, err = dec.Token()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%T: %v\n", t, t)
+	fmt.Println("--------")
+	fmt.Println("count : = " + strconv.FormatInt(count, 10))
+	fmt.Println("--------")
+
+	return nil, out
 }
